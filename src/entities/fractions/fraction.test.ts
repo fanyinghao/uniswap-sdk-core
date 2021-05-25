@@ -1,5 +1,5 @@
 import JSBI from 'jsbi'
-import Fraction from './fraction'
+import { Fraction } from './fraction'
 
 describe('Fraction', () => {
   describe('#quotient', () => {
@@ -116,6 +116,13 @@ describe('Fraction', () => {
       expect(
         new Fraction(JSBI.BigInt(5), JSBI.BigInt(12)).divide(new Fraction(JSBI.BigInt(4), JSBI.BigInt(12)))
       ).toEqual(new Fraction(JSBI.BigInt(60), JSBI.BigInt(48)))
+    })
+  })
+  describe('#asFraction', () => {
+    it('returns an equivalent but not the same reference fraction', () => {
+      const f = new Fraction(1, 2)
+      expect(f.asFraction).toEqual(f)
+      expect(f === f.asFraction).toEqual(false)
     })
   })
 })

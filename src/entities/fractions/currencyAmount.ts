@@ -1,48 +1,80 @@
-import JSBI from 'jsbi'
-import { currencyEquals } from '../../utils'
-import { Currency } from '../currency'
-import { Ether, ETHER } from '../ether'
 import invariant from 'tiny-invariant'
+import JSBI from 'jsbi'
+import { Currency } from '../currency'
+import { Ether } from '../ether'
+import { NativeCurrency } from '../nativeCurrency'
+import { Token } from '../token'
+import { Fraction } from './fraction'
 import _Big from 'big.js'
-import toFormat from 'toformat'
 
+import toFormat from 'toformat'
 import { BigintIsh, Rounding, MaxUint256 } from '../../constants'
-import Fraction from './fraction'
 
 const Big = toFormat(_Big)
 
-export default class CurrencyAmount<T extends Currency> extends Fraction {
+export class CurrencyAmount<T extends Currency> extends Fraction {
   public readonly currency: T
+  public readonly decimalScale: JSBI
 
   /**
-   * Helper that calls the constructor with the ETHER currency
-   * @param amount ether amount in wei
+   * Returns a new currency amount instance from the
+   * @param currency the currency in the amount
+   * @param rawAmount the raw token or ether amount
    */
-  public static ether(amount: BigintIsh): CurrencyAmount<Ether> {
-    return new CurrencyAmount(ETHER, amount)
+  public static fromRawAmount<T extends Currency>(currency: T, rawAmount: BigintIsh): CurrencyAmount<T> {
+    return new CurrencyAmount(currency, rawAmount)
   }
 
-  // amount _must_ be raw, i.e. in the native representation
-  public constructor(currency: T, amount: BigintIsh) {
-    const parsedAmount = JSBI.BigInt(amount)
-    invariant(JSBI.lessThanOrEqual(parsedAmount, MaxUint256), 'AMOUNT')
+  /**
+   * Construct a currency amount with a denominator that is not equal to 1
+   * @param currency the currency
+   * @param numerator the numerator of the fractional token amount
+   * @param denominator the denominator of the fractional token amount
+   */
+  public static fromFractionalAmount<T extends Currency>(
+    currency: T,
+    numerator: BigintIsh,
+    denominator: BigintIsh
+  ): CurrencyAmount<T> {
+    return new CurrencyAmount(currency, numerator, denominator)
+  }
 
-    super(parsedAmount, JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(currency.decimals)))
+  /**
+   * Helper that calls the constructor with the Ether currency
+   * @param chainId the chain on which the ether exists
+   * @param rawAmount ether amount in wei
+   */
+  public static ether(chainId: number, rawAmount: BigintIsh): CurrencyAmount<NativeCurrency> {
+    return CurrencyAmount.fromRawAmount(Ether.onChain(chainId), rawAmount)
+  }
+
+  protected constructor(currency: T, numerator: BigintIsh, denominator?: BigintIsh) {
+    super(numerator, denominator)
+    invariant(JSBI.lessThanOrEqual(this.quotient, MaxUint256), 'AMOUNT')
     this.currency = currency
-  }
-
-  public get raw(): JSBI {
-    return this.numerator
+    this.decimalScale = JSBI.exponentiate(JSBI.BigInt(10), JSBI.BigInt(currency.decimals))
   }
 
   public add(other: CurrencyAmount<T>): CurrencyAmount<T> {
-    invariant(currencyEquals(this.currency, other.currency), 'TOKEN')
-    return new CurrencyAmount(this.currency, JSBI.add(this.raw, other.raw))
+    invariant(this.currency.equals(other.currency), 'CURRENCY')
+    const added = super.add(other)
+    return CurrencyAmount.fromFractionalAmount(this.currency, added.numerator, added.denominator)
   }
 
   public subtract(other: CurrencyAmount<T>): CurrencyAmount<T> {
-    invariant(currencyEquals(this.currency, other.currency), 'TOKEN')
-    return new CurrencyAmount(this.currency, JSBI.subtract(this.raw, other.raw))
+    invariant(this.currency.equals(other.currency), 'CURRENCY')
+    const subtracted = super.subtract(other)
+    return CurrencyAmount.fromFractionalAmount(this.currency, subtracted.numerator, subtracted.denominator)
+  }
+
+  public multiply(other: Fraction | BigintIsh): CurrencyAmount<T> {
+    const multiplied = super.multiply(other)
+    return CurrencyAmount.fromFractionalAmount(this.currency, multiplied.numerator, multiplied.denominator)
+  }
+
+  public divide(other: Fraction | BigintIsh): CurrencyAmount<T> {
+    const divided = super.divide(other)
+    return CurrencyAmount.fromFractionalAmount(this.currency, divided.numerator, divided.denominator)
   }
 
   public toSignificant(
@@ -50,7 +82,7 @@ export default class CurrencyAmount<T extends Currency> extends Fraction {
     format?: object,
     rounding: Rounding = Rounding.ROUND_DOWN
   ): string {
-    return super.toSignificant(significantDigits, format, rounding)
+    return super.divide(this.decimalScale).toSignificant(significantDigits, format, rounding)
   }
 
   public toFixed(
@@ -59,11 +91,16 @@ export default class CurrencyAmount<T extends Currency> extends Fraction {
     rounding: Rounding = Rounding.ROUND_DOWN
   ): string {
     invariant(decimalPlaces <= this.currency.decimals, 'DECIMALS')
-    return super.toFixed(decimalPlaces, format, rounding)
+    return super.divide(this.decimalScale).toFixed(decimalPlaces, format, rounding)
   }
 
   public toExact(format: object = { groupSeparator: '' }): string {
     Big.DP = this.currency.decimals
-    return new Big(this.numerator.toString()).div(this.denominator.toString()).toFormat(format)
+    return new Big(this.quotient.toString()).div(this.decimalScale.toString()).toFormat(format)
+  }
+
+  public get wrapped(): CurrencyAmount<Token> {
+    if (this.currency.isToken) return this as CurrencyAmount<Token>
+    return CurrencyAmount.fromFractionalAmount(this.currency.wrapped, this.numerator, this.denominator)
   }
 }
